@@ -88,5 +88,8 @@ trait Costs {
     def storageCost: Cost = Cost(a.map(a => a.serializedSize).sum)
   }
 
-  final val MAX_VALUE = PhloLimit(Long.MaxValue)
+  // Even though we use Long as phlo limit we pass in less than maximum value
+  // Because when we pass Long.MaxValue and we refund the deploy for clearing the tuplespace
+  // phlo limit overflows causing the deploy to throw OutOfPhlogistonError.
+  final val MAX_VALUE = PhloLimit(Integer.MAX_VALUE)
 }
