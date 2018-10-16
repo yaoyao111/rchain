@@ -21,8 +21,7 @@ case class Server(
     mapSize: Long,
     storeType: StoreType,
     maxNumOfConnections: Int,
-    maxMessageSize: Int,
-    threadPoolSize: Int
+    maxMessageSize: Int
 )
 
 case class GrpcServer(
@@ -62,6 +61,12 @@ case class BondingDeployGen(
     bondKey: String,
     ethAddress: String,
     amount: Long,
+    secKey: String,
+    pubKey: String
+) extends Command
+case class FaucetBondingDeployGen(
+    amount: Long,
+    sigAlgorithm: String,
     secKey: String,
     pubKey: String
 ) extends Command

@@ -11,6 +11,7 @@ import coop.rchain.rholang.interpreter.Runtime.RhoISpace
 import coop.rchain.rholang.interpreter.accounting.Cost
 import coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError
 import coop.rchain.rholang.interpreter.storage.implicits.matchListPar
+import coop.rchain.rspace.util._
 import monix.eval.Task
 
 import scala.util.Try
@@ -45,7 +46,7 @@ object SystemProcesses {
       space: RhoISpace,
       dispatcher: Dispatch[Task, ListParWithRandomAndPhlos, TaggedContinuation]
   ): Seq[ListParWithRandomAndPhlos] => Task[Unit] = {
-    case Seq(ListParWithRandomAndPhlos(Seq(arg, ack), rand, cost)) =>
+    case Seq(ListParWithRandomAndPhlos(Seq(arg, ack), rand, _)) =>
       Task.now(Console.println(prettyPrinter.buildString(arg))).flatMap { (_: Unit) =>
         space
           .produce(
@@ -53,6 +54,7 @@ object SystemProcesses {
             ListParWithRandom(Seq(Par.defaultInstance), rand),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
   }
@@ -66,7 +68,7 @@ object SystemProcesses {
       space: RhoISpace,
       dispatcher: Dispatch[Task, ListParWithRandomAndPhlos, TaggedContinuation]
   ): Seq[ListParWithRandomAndPhlos] => Task[Unit] = {
-    case Seq(ListParWithRandomAndPhlos(Seq(arg, ack), rand, cost)) =>
+    case Seq(ListParWithRandomAndPhlos(Seq(arg, ack), rand, _)) =>
       Task.now(Console.err.println(prettyPrinter.buildString(arg))).flatMap { (_: Unit) =>
         space
           .produce(
@@ -74,6 +76,7 @@ object SystemProcesses {
             ListParWithRandom(Seq(Par.defaultInstance), rand),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
   }
@@ -106,6 +109,7 @@ object SystemProcesses {
             ListParWithRandom(Seq(Expr(GBool(verified))), rand),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
   }
@@ -128,6 +132,7 @@ object SystemProcesses {
             ListParWithRandom(Seq(Expr(GBool(verified))), rand),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
     case _ =>
@@ -140,7 +145,7 @@ object SystemProcesses {
       space: RhoISpace,
       dispatcher: Dispatch[Task, ListParWithRandomAndPhlos, TaggedContinuation]
   ): Seq[ListParWithRandomAndPhlos] => Task[Unit] = {
-    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, cost)) =>
+    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, _)) =>
       Task.fromTry(Try(Sha256.hash(input))).flatMap { hash =>
         space
           .produce(
@@ -151,6 +156,7 @@ object SystemProcesses {
             ),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
     case _ =>
@@ -161,7 +167,7 @@ object SystemProcesses {
       space: RhoISpace,
       dispatcher: Dispatch[Task, ListParWithRandomAndPhlos, TaggedContinuation]
   ): Seq[ListParWithRandomAndPhlos] => Task[Unit] = {
-    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, cost)) =>
+    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, _)) =>
       Task.fromTry(Try(Keccak256.hash(input))).flatMap { hash =>
         space
           .produce(
@@ -172,6 +178,7 @@ object SystemProcesses {
             ),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
     case _ =>
@@ -182,7 +189,7 @@ object SystemProcesses {
       space: RhoISpace,
       dispatcher: Dispatch[Task, ListParWithRandomAndPhlos, TaggedContinuation]
   ): Seq[ListParWithRandomAndPhlos] => Task[Unit] = {
-    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, cost)) =>
+    case Seq(ListParWithRandomAndPhlos(Seq(IsByteArray(input), ack), rand, _)) =>
       Task.fromTry(Try(Blake2b256.hash(input))).flatMap { hash =>
         space
           .produce(
@@ -193,6 +200,7 @@ object SystemProcesses {
             ),
             false
           )(MATCH_UNLIMITED_PHLOS)
+          .map(unpackOption(_))
           .foldResult(dispatcher)
       }
     case _ =>

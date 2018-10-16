@@ -52,6 +52,7 @@ object RholangCLI {
     val conf = new Conf(args)
 
     val runtime = Runtime.create(conf.data_dir(), conf.map_size())
+    Await.result(runtime.injectEmptyRegistryRoot[Task].runAsync, 5.seconds)
 
     try {
       if (conf.files.supplied) {
@@ -96,7 +97,7 @@ object RholangCLI {
     printPrompt()
     Option(scala.io.StdIn.readLine()) match {
       case Some(line) =>
-        Interpreter.buildNormalizedTerm(new StringReader(line)).runAttempt match {
+        Interpreter.buildNormalizedTerm(line).runAttempt match {
           case Right(par)                 => evaluatePar(runtime)(par)
           case Left(ie: InterpreterError) =>
             // we don't want to print stack trace for user errors

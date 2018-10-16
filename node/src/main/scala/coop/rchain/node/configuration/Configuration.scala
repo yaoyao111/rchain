@@ -46,7 +46,7 @@ object Configuration {
   private val DefaultTimeout                    = 2000
   private val DefaultGenesisValidator           = false
   private val DefaultMapSize: Long              = 1024L * 1024L * 1024L
-  private val DefaultStoreType: StoreType       = FineGrainedLMDB
+  private val DefaultStoreType: StoreType       = LMDB
   private val DefaultCasperBlockStoreSize: Long = 1024L * 1024L * 1024L
   private val DefaultNumValidators              = 5
   private val DefaultValidatorSigAlgorithm      = "ed25519"
@@ -57,8 +57,10 @@ object Configuration {
   private val DefaultRequiredSigns              = 0
   private val DefaultApprovalProtocolDuration   = 5.minutes
   private val DefaultApprovalProtocolInterval   = 5.seconds
-  private val DefaultMaxMessageSize: Int        = 100 * 1024 * 1024
-  private val DefaultThreadPoolSize: Int        = 4000
+  private val DefaultMaxMessageSize: Int        = 4 * 1024 * 1024
+  // within range HTTP2 RFC 7540
+  private val MaxMessageSizeMinimumValue: Int   = 1 * 1024 * 1024
+  private val MaxMessageSizeMaximumValue: Int   = 10 * 1024 * 1024
   private val DefaultMinimumBond: Long          = 1L
   private val DefaultMaximumBond: Long          = Long.MaxValue
   private val DefaultHasFaucet: Boolean         = false
@@ -142,8 +144,7 @@ object Configuration {
             DefaultMapSize,
             DefaultStoreType,
             DefaultMaxNumOfConnections,
-            DefaultMaxMessageSize,
-            DefaultThreadPoolSize
+            DefaultMaxMessageSize
           ),
           GrpcServer(
             options.grpcHost.getOrElse(DefaultGrpcHost),
@@ -288,10 +289,13 @@ object Configuration {
     )
 
     val maxMessageSize: Int =
-      get(_.run.maxMessageSize, _.server.flatMap(_.maxMessageSize), DefaultMaxMessageSize)
-
-    val threadPoolSize =
-      get(_.run.threadPoolSize, _.server.flatMap(_.threadPoolSize), DefaultThreadPoolSize)
+      Math.max(
+        MaxMessageSizeMinimumValue,
+        Math.min(
+          MaxMessageSizeMaximumValue,
+          get(_.run.maxMessageSize, _.server.flatMap(_.maxMessageSize), DefaultMaxMessageSize)
+        )
+      )
 
     val shardId = get(_.run.shardId, _.validators.flatMap(_.shardId), DefaultShardId)
 
@@ -309,8 +313,7 @@ object Configuration {
       mapSize,
       storeType,
       maxNumOfConnections,
-      maxMessageSize,
-      threadPoolSize
+      maxMessageSize
     )
     val grpcServer = GrpcServer(
       grpcHost,
@@ -389,6 +392,9 @@ object Configuration {
       case Some(options.bondingDeployGen) =>
         import options.bondingDeployGen._
         BondingDeployGen(bondKey(), ethAddr(), amount(), privateKey(), publicKey())
+      case Some(options.faucetBondingDeployGen) =>
+        import options.faucetBondingDeployGen._
+        FaucetBondingDeployGen(amount(), sigAlgorithm(), privateKey(), publicKey())
       case _ => Help
     }
 }
