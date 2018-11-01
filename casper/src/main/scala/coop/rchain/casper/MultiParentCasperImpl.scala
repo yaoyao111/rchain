@@ -70,6 +70,8 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
 
   private val processingBlocks = new AtomicSyncVar(Set.empty[BlockHash])
 
+  private val runtimeManagerLock = AtomicSyncVarF.of[F, Unit](())
+
   def addBlock(b: BlockMessage): F[BlockStatus] =
     for {
       acquire <- Capture[F].capture {
@@ -311,17 +313,18 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
       p: Seq[BlockMessage],
       r: Seq[Deploy]
   ): F[Either[Throwable, (StateHash, Seq[InternalProcessedDeploy])]] =
-    for {
-      now <- Time[F].currentMillis
-      possibleProcessedDeploys <- InterpreterUtil.computeDeploysCheckpoint[F](
-                                   p,
-                                   r,
-                                   _blockDag.get,
-                                   runtimeManager,
-                                   Some(now)
-                                 )
-    } yield possibleProcessedDeploys
-
+    runtimeManagerLock.modify { _ =>
+      for {
+        now <- Time[F].currentMillis
+        possibleProcessedDeploys <- InterpreterUtil.computeDeploysCheckpoint[F](
+                                     p,
+                                     r,
+                                     _blockDag.get,
+                                     runtimeManager,
+                                     Some(now)
+                                   )
+      } yield ((), possibleProcessedDeploys)
+    }
   def blockDag: F[BlockDag] = Capture[F].capture {
     _blockDag.get
   }
@@ -358,7 +361,8 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
                                           b,
                                           dag,
                                           emptyStateHash,
-                                          runtimeManager
+                                          runtimeManager,
+                                          runtimeManagerLock
                                         )
                                     )
       postBondsCacheStatus <- postTransactionsCheckStatus.joinRight.traverse(

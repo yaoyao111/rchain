@@ -561,21 +561,24 @@ object Validate {
       block: BlockMessage,
       dag: BlockDag,
       emptyStateHash: StateHash,
-      runtimeManager: RuntimeManager
+      runtimeManager: RuntimeManager,
+      runtimeManagerLock: AtomicSyncVarF[F, Unit]
   )(implicit scheduler: Scheduler): F[Either[BlockStatus, ValidBlock]] =
-    for {
-      maybeStateHash <- InterpreterUtil
-                         .validateBlockCheckpoint[F](
-                           block,
-                           dag,
-                           runtimeManager
-                         )
-    } yield
-      maybeStateHash match {
-        case Left(ex)       => Left(ex)
-        case Right(Some(_)) => Right(Valid)
-        case Right(None)    => Left(InvalidTransaction)
-      }
+    runtimeManagerLock.modify { _ =>
+      for {
+        maybeStateHash <- InterpreterUtil
+                           .validateBlockCheckpoint[F](
+                             block,
+                             dag,
+                             runtimeManager
+                           )
+      } yield
+        ((), maybeStateHash match {
+          case Left(ex)       => Left(ex)
+          case Right(Some(_)) => Right(Valid)
+          case Right(None)    => Left(InvalidTransaction)
+        })
+    }
 
   /**
     * If block contains an invalid justification block B and the creator of B is still bonded,
