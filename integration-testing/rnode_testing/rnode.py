@@ -38,6 +38,12 @@ class TimeoutError(Exception):
         self.timeout = timeout
 
 
+def make_container_logs_path(container_name):
+    ci_logs_dir = os.environ.get('CI_LOGS_DIR')
+    dir = 'logs' if ci_logs_dir is None else ci_logs_dir
+    return os.path.join(dir, "{}.log".format(container_name))
+
+
 class Node:
     def __init__(self, container, deploy_dir, docker_client, timeout, network):
         self.container = container
@@ -65,12 +71,12 @@ class Node:
         return self.exec_run(cmd=cmd)
 
     def cleanup(self):
-        log_file = os.path.join('logs', f"{self.container.name}.log")
+        log_file_path = make_container_logs_path(self.container.name)
 
-        with open(log_file, "w") as f:
+        with open(log_file_path, "w") as f:
             f.write(self.logs())
 
-        logging.info(f"Remove container {self.container.name}. Logs have been written to {log_file}")
+        logging.info(f"Remove container {self.container.name}. Logs have been written to {log_file_path}")
 
         self.container.remove(force=True, v=True)
 
@@ -84,11 +90,11 @@ class Node:
     def show_blocks(self):
         return self.exec_run(f'{rnode_binary} show-blocks')
 
-    def exec_run(self, cmd):
+    def exec_run(self, cmd, stderr=True):
         queue = Queue(1)
 
         def execution():
-            r = self.container.exec_run(cmd)
+            r = self.container.exec_run(cmd, stderr=stderr)
             queue.put((r.exit_code, r.output.decode('utf-8')))
 
         process = Process(target=execution)
@@ -108,14 +114,14 @@ class Node:
             process.join()
             raise TimeoutError(cmd, self.timeout)
 
-    def shell_out(self, *cmd):
-        exit_code, output = self.exec_run(cmd)
+    def shell_out(self, *cmd, stderr=True):
+        exit_code, output = self.exec_run(cmd, stderr=stderr)
         if exit_code != 0:
             raise NonZeroExitCodeError(command=cmd, exit_code=exit_code, output=output)
         return output
 
-    def call_rnode(self, *node_args):
-        return self.shell_out(rnode_binary, *node_args)
+    def call_rnode(self, *node_args, stderr=True):
+        return self.shell_out(rnode_binary, *node_args, stderr=stderr)
 
     def eval(self, rho_file_path):
         return self.call_rnode('eval', rho_file_path)
@@ -126,9 +132,9 @@ class Node:
     def propose(self):
         return self.call_rnode('propose')
 
-    def repl(self, rholang_code):
+    def repl(self, rholang_code, stderr=False):
         quoted_rholang_code = shlex.quote(rholang_code)
-        return self.shell_out('sh', '-c', f'echo {quoted_rholang_code} | {rnode_binary} repl')
+        return self.shell_out('sh', '-c', f'echo {quoted_rholang_code} | {rnode_binary} repl', stderr=stderr)
 
     __timestamp_rx = "\\d\\d:\\d\\d:\\d\\d\\.\\d\\d\\d"
     __log_message_rx = re.compile(f"^{__timestamp_rx} (.*?)(?={__timestamp_rx})", re.MULTILINE | re.DOTALL)
@@ -150,6 +156,12 @@ def create_node_container(docker_client, image, name, network, bonds_file, comma
     cmd, args = command
     str_command = cmd + " " + " ".join(f"{k} {v}" for (k, v) in args.items())
 
+    env = {}
+    java_options = os.environ.get('_JAVA_OPTIONS')
+    if java_options is not None:
+        env['_JAVA_OPTIONS'] = java_options
+    logging.info('Using _JAVA_OPTIONS: {}'.format(java_options))
+
     container = docker_client.containers.run(image,
                                              name=name,
                                              user='root',
@@ -164,7 +176,8 @@ def create_node_container(docker_client, image, name, network, bonds_file, comma
                                                            f"{deploy_dir}:{rnode_deploy_dir}"
                                                        ] + extra_volumes,
                                              command=str_command,
-                                             hostname=name)
+                                             hostname=name,
+                                             environment=env)
     return Node(container, deploy_dir, docker_client, rnode_timeout, network)
 
 
@@ -178,8 +191,8 @@ def create_bootstrap_node(docker_client,
                           memory="1024m",
                           cpuset_cpus="0"):
 
-    key_file = resources.file_path("bootstrap_certificate/node.key.pem")
-    cert_file = resources.file_path("bootstrap_certificate/node.certificate.pem")
+    key_file = resources.get_resource_path("bootstrap_certificate/node.key.pem")
+    cert_file = resources.get_resource_path("bootstrap_certificate/node.certificate.pem")
 
     logging.info(f"Using key_file={key_file} and cert_file={cert_file}")
 

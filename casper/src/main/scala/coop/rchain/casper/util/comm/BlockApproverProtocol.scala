@@ -15,13 +15,14 @@ import coop.rchain.comm.CommError.ErrorHandler
 import coop.rchain.comm.protocol.routing.Packet
 import coop.rchain.comm.rp.Connect.RPConfAsk
 import coop.rchain.comm.rp.ProtocolHelper.packet
-import coop.rchain.comm.transport.TransportLayer
+import coop.rchain.comm.transport.{Blob, TransportLayer}
 import coop.rchain.comm.{transport, PeerNode}
 import coop.rchain.crypto.hash.Blake2b256
 import coop.rchain.shared._
 import monix.execution.Scheduler
 
 import scala.util.Try
+import scala.concurrent.duration.Duration
 
 /**
   * Validator side of the protocol defined in
@@ -68,10 +69,10 @@ class BlockApproverProtocol(
             local <- RPConfAsk[F].reader(_.local)
             serializedApproval = BlockApproverProtocol
               .getApproval(candidate, validatorId)
-              .toByteArray
-            msg  = packet(local, transport.BlockApproval, serializedApproval)
-            send <- TransportLayer[F].send(peer, msg)
-            _    <- Log[F].info(s"Received expected candidate from $peer. Approval sent in response.")
+              .toByteString
+            msg = Blob(local, Packet(transport.BlockApproval.id, serializedApproval))
+            _   <- TransportLayer[F].stream(Seq(peer), msg)
+            _   <- Log[F].info(s"Received expected candidate from $peer. Approval sent in response.")
           } yield none[Packet]
         case Left(errMsg) =>
           Log[F]
@@ -141,6 +142,7 @@ object BlockApproverProtocol {
             .or("Mismatch between number of candidate deploys and expected number of deploys.")
       stateHash <- runtimeManager
                     .replayComputeState(runtimeManager.emptyStateHash, blockDeploys)
+                    .runSyncUnsafe(Duration.Inf)
                     .leftMap { case (_, status) => s"Failed status during replay: $status." }
       _ <- (stateHash == postState.tuplespace)
             .either(())
@@ -157,9 +159,6 @@ object BlockApproverProtocol {
     if (msg.typeId == transport.UnapprovedBlock.id)
       Try(UnapprovedBlock.parseFrom(msg.content.toByteArray)).toOption
     else None
-
-  implicit val phloPriceEq = Eq.by[PhloPrice, Long](_.value)
-  implicit val phloLimitEq = Eq.by[PhloLimit, Long](_.value)
 
   val deployDataEq: cats.kernel.Eq[DeployData] = new cats.kernel.Eq[DeployData] {
     override def eqv(x: DeployData, y: DeployData): Boolean =

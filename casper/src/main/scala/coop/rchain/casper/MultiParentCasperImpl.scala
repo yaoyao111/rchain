@@ -5,7 +5,8 @@ import cats.effect.concurrent.Ref
 import cats.{Applicative, Monad}
 import cats.implicits._
 import com.google.protobuf.ByteString
-import coop.rchain.blockstorage.BlockStore
+import coop.rchain.blockstorage.{BlockMetadata, BlockStore}
+import coop.rchain.blockstorage.util.TopologicalSortUtil
 import coop.rchain.casper.protocol._
 import coop.rchain.casper.util.ProtoUtil._
 import coop.rchain.casper.util._
@@ -42,16 +43,11 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
   type Validator = ByteString
 
   //TODO: Extract hardcoded version
-  private val version = 0L
+  private val version = 1L
 
   private val _blockDag: AtomicSyncVar[BlockDag] = new AtomicSyncVar(initialDag)
 
   private val emptyStateHash = runtimeManager.emptyStateHash
-
-  private val knownStateHashesContainer: AtomicSyncVarF[F, Set[StateHash]] =
-    AtomicSyncVarF.of[F, Set[StateHash]](
-      Set[StateHash](emptyStateHash, postGenesisStateHash)
-    )
 
   private val blockBuffer: mutable.HashSet[BlockMessage] =
     new mutable.HashSet[BlockMessage]()
@@ -95,7 +91,10 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
                      )
                      .map(_ => BlockStatus.processing)
                  case Right((_, true)) =>
-                   internalAddBlock(b).flatMap(
+                   Log[F]
+                     .info(
+                       s"Block ${PrettyPrinter.buildString(b.blockHash)} is now processing."
+                     ) *> internalAddBlock(b).flatMap(
                      status =>
                        Capture[F].capture { processingBlocks.update(_ - b.blockHash); status }
                    )
@@ -110,13 +109,15 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
 
   def internalAddBlock(b: BlockMessage): F[BlockStatus] =
     for {
-      validFormat <- Validate.formatOfFields[F](b)
-      validSig    <- Validate.blockSignature[F](b)
-      dag         <- blockDag
-      validSender <- Validate.blockSender[F](b, genesis, dag)
+      validFormat  <- Validate.formatOfFields[F](b)
+      validSig     <- Validate.blockSignature[F](b)
+      dag          <- blockDag
+      validSender  <- Validate.blockSender[F](b, genesis, dag)
+      validVersion <- Validate.version[F](b, version)
       attempt <- if (!validFormat) InvalidUnslashableBlock.pure[F]
                 else if (!validSig) InvalidUnslashableBlock.pure[F]
                 else if (!validSender) InvalidUnslashableBlock.pure[F]
+                else if (!validVersion) InvalidUnslashableBlock.pure[F]
                 else if (validatorId.exists(id => ByteString.copyFrom(id.publicKey) == b.sender))
                   addEffects(Valid, b).map(_ => Valid)
                 else attemptAdd(b)
@@ -212,11 +213,17 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
   def createBlock: F[CreateBlockStatus] = validatorId match {
     case Some(vId @ ValidatorIdentity(publicKey, privateKey, sigAlgorithm)) =>
       for {
-        dag            <- blockDag
-        orderedHeads   <- estimator(dag)
-        p              <- chooseNonConflicting[F](orderedHeads, genesis, dag)
-        r              <- remDeploys(dag, p)
+        dag              <- blockDag
+        orderedHeads     <- estimator(dag)
+        p                <- chooseNonConflicting[F](orderedHeads, genesis, dag)
+        r                <- remDeploys(dag, p)
+        bondedValidators = bonds(p.head).map(_.validator).toSet
+        //We ensure that only the justifications given in the block are those
+        //which are bonded validators in the chosen parent. This is safe because
+        //any latest message not from a bonded validator will not change the
+        //final fork-choice.
         justifications = toJustification(dag.latestMessages)
+          .filter(j => bondedValidators.contains(j.validator))
         proposal <- if (r.nonEmpty || p.length > 1) {
                      createProposal(p, r, justifications)
                    } else {
@@ -256,7 +263,7 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
   ): F[CreateBlockStatus] =
     for {
       now                      <- Time[F].currentMillis
-      possibleProcessedDeploys <- updateKnownStateHashes(knownStateHashesContainer, p, r)
+      possibleProcessedDeploys <- updateKnownStateHashes(p, r)
       result <- possibleProcessedDeploys match {
                  case Left(ex) =>
                    Log[F]
@@ -301,36 +308,29 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
     } yield result
 
   private def updateKnownStateHashes(
-      knownStateHashesContainer: AtomicSyncVarF[F, Set[StateHash]],
       p: Seq[BlockMessage],
       r: Seq[Deploy]
   ): F[Either[Throwable, (StateHash, Seq[InternalProcessedDeploy])]] =
-    knownStateHashesContainer
-      .modify[(Either[Throwable, (StateHash, Seq[InternalProcessedDeploy])])] { knownStateHashes =>
-        for {
-          possibleProcessedDeploys <- InterpreterUtil.computeDeploysCheckpoint[F](
-                                       p,
-                                       r,
-                                       _blockDag.get,
-                                       knownStateHashes,
-                                       runtimeManager
-                                     )
-        } yield (possibleProcessedDeploys._2, possibleProcessedDeploys._1)
-      }
+    for {
+      now <- Time[F].currentMillis
+      possibleProcessedDeploys <- InterpreterUtil.computeDeploysCheckpoint[F](
+                                   p,
+                                   r,
+                                   _blockDag.get,
+                                   runtimeManager,
+                                   Some(now)
+                                 )
+    } yield possibleProcessedDeploys
 
   def blockDag: F[BlockDag] = Capture[F].capture {
     _blockDag.get
   }
 
   def storageContents(hash: StateHash): F[String] =
-    for {
-      knownStateHashes <- knownStateHashesContainer.get
-    } yield
-      if (knownStateHashes.contains(hash)) {
-        runtimeManager.storageRepr(hash)
-      } else {
-        s"Tuplespace hash ${Base16.encode(hash.toByteArray)} not found!"
-      }
+    runtimeManager
+      .storageRepr(hash)
+      .getOrElse(s"Tuplespace hash ${Base16.encode(hash.toByteArray)} not found!")
+      .pure[F]
 
   def normalizedInitialFault(weights: Map[Validator, Long]): F[Float] =
     (equivocationsTracker
@@ -349,6 +349,7 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
    */
   private def attemptAdd(b: BlockMessage): F[BlockStatus] =
     for {
+      _                    <- Log[F].info(s"Attempting to add Block ${PrettyPrinter.buildString(b.blockHash)} to DAG.")
       dag                  <- Capture[F].capture { _blockDag.get }
       postValidationStatus <- Validate.blockSummary[F](b, genesis, dag, shardId)
       postTransactionsCheckStatus <- postValidationStatus.traverse(
@@ -357,8 +358,7 @@ class MultiParentCasperImpl[F[_]: Sync: Capture: ConnectionsCell: TransportLayer
                                           b,
                                           dag,
                                           emptyStateHash,
-                                          runtimeManager,
-                                          knownStateHashesContainer
+                                          runtimeManager
                                         )
                                     )
       postBondsCacheStatus <- postTransactionsCheckStatus.joinRight.traverse(

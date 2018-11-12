@@ -4,17 +4,20 @@ import cats.Monad
 import cats.implicits._
 import com.google.protobuf.{ByteString, Int32Value, StringValue}
 import coop.rchain.blockstorage.BlockStore
-import coop.rchain.casper.{BlockDag, BlockMetadata, PrettyPrinter}
+import coop.rchain.casper.{BlockDag, PrettyPrinter}
 import coop.rchain.casper.EquivocationRecord.SequenceNumber
 import coop.rchain.casper.Estimator.{BlockHash, Validator}
-import coop.rchain.casper.protocol._
+import coop.rchain.casper.protocol.{DeployData, _}
+import coop.rchain.casper.util.ProtoUtil.basicDeployData
 import coop.rchain.casper.util.rholang.InterpreterUtil
 import coop.rchain.casper.util.implicits._
 import coop.rchain.crypto.codec.Base16
 import coop.rchain.crypto.hash.Blake2b256
-import coop.rchain.models.{PCost, Par}
+import coop.rchain.models._
 import coop.rchain.rholang.build.CompiledRholangSource
 import coop.rchain.rholang.interpreter.accounting
+import coop.rchain.shared.Time
+import java.nio.charset.StandardCharsets
 
 import scala.collection.immutable
 
@@ -214,6 +217,17 @@ object ProtoUtil {
     ProtoUtil.parentHashes(b).toList.traverse { parentHash =>
       ProtoUtil.unsafeGetBlock[F](parentHash)
     }
+
+  def containsDeploy(b: BlockMessage, user: ByteString, timestamp: Long): Boolean =
+    deploys(b).toStream
+      .flatMap(getDeployData)
+      .exists(deployData => deployData.user == user && deployData.timestamp == timestamp)
+
+  private def getDeployData(d: ProcessedDeploy): Option[DeployData] =
+    for {
+      deploy     <- d.deploy
+      deployData <- deploy.raw
+    } yield deployData
 
   def deploys(b: BlockMessage): Seq[ProcessedDeploy] =
     b.body.fold(Seq.empty[ProcessedDeploy])(_.deploys)
@@ -422,55 +436,44 @@ object ProtoUtil {
   def stringToByteString(string: String): ByteString =
     ByteString.copyFrom(Base16.decode(string))
 
-  def basicDeployData(id: Int): DeployData = {
-    //TODO this should be removed once we assign the deploy with exact user
-    Thread.sleep(1)
-    val timestamp = System.currentTimeMillis()
-    val term      = s"@${id}!($id)"
-
-    DeployData()
-      .withUser(ByteString.EMPTY)
-      .withTimestamp(timestamp)
-      .withTerm(term)
-      .withPhloLimit(accounting.MAX_VALUE)
-  }
-
-  def basicDeploy(id: Int): Deploy = {
-    val d    = basicDeployData(id)
-    val term = InterpreterUtil.mkTerm(d.term).right.get
-    Deploy(
-      term = Some(term),
-      raw = Some(d)
+  def basicDeployData[F[_]: Monad: Time](id: Int): F[DeployData] =
+    Time[F].currentMillis.map(
+      now =>
+        DeployData()
+          .withUser(ByteString.EMPTY)
+          .withTimestamp(now)
+          .withTerm(s"@${id}!($id)")
+          .withPhloLimit(accounting.MAX_VALUE)
     )
-  }
 
-  def basicProcessedDeploy(id: Int): ProcessedDeploy = {
-    val deploy = basicDeploy(id)
-    ProcessedDeploy(
-      deploy = Some(deploy),
-      errored = false
-    )
-  }
+  def basicDeploy[F[_]: Monad: Time](id: Int): F[Deploy] =
+    for {
+      d    <- basicDeployData[F](id)
+      term = InterpreterUtil.mkTerm(d.term).right.get
+    } yield Deploy(term = Some(term), raw = Some(d))
 
-  def sourceDeploy(source: String, timestamp: Long, phlos: PhloLimit): DeployData =
+  def basicProcessedDeploy[F[_]: Monad: Time](id: Int): F[ProcessedDeploy] =
+    basicDeploy[F](id).map(deploy => ProcessedDeploy(deploy = Some(deploy)))
+
+  def sourceDeploy(source: String, timestamp: Long, phlos: Long): DeployData =
     DeployData(
       user = ByteString.EMPTY,
       timestamp = timestamp,
       term = source,
-      phloLimit = Some(phlos)
+      phloLimit = phlos
     )
 
   def compiledSourceDeploy(
       source: CompiledRholangSource,
       timestamp: Long,
-      phloLimit: PhloLimit
+      phloLimit: Long
   ): Deploy =
     Deploy(
       term = Some(source.term),
       raw = Some(sourceDeploy(source.code, timestamp, phloLimit))
     )
 
-  def termDeploy(term: Par, timestamp: Long, phloLimit: PhloLimit): Deploy =
+  def termDeploy(term: Par, timestamp: Long, phloLimit: Long): Deploy =
     Deploy(
       term = Some(term),
       raw = Some(
@@ -478,7 +481,7 @@ object ProtoUtil {
           user = ByteString.EMPTY,
           timestamp = timestamp,
           term = term.toProtoString,
-          phloLimit = Some(phloLimit)
+          phloLimit = phloLimit
         )
       )
     )
@@ -498,4 +501,17 @@ object ProtoUtil {
     */
   def stripDeployData(d: DeployData): DeployData =
     DeployData().withUser(d.user).withTimestamp(d.timestamp)
+
+  def computeCodeHash(dd: DeployData): Par = {
+    val bytes             = dd.term.getBytes(StandardCharsets.UTF_8)
+    val hash: Array[Byte] = Blake2b256.hash(bytes)
+    Par(exprs = Seq(Expr(Expr.ExprInstance.GByteArray(ByteString.copyFrom(hash)))))
+  }
+
+  def getRholangDeployParams(dd: DeployData): (Par, Par, Par, Par) = {
+    val phloPrice: Par = Par(exprs = Seq(Expr(Expr.ExprInstance.GInt(dd.phloPrice))))
+    val userId: Par    = Par(exprs = Seq(Expr(Expr.ExprInstance.GByteArray(dd.user))))
+    val timestamp: Par = Par(exprs = Seq(Expr(Expr.ExprInstance.GInt(dd.timestamp))))
+    (computeCodeHash(dd), phloPrice, userId, timestamp)
+  }
 }

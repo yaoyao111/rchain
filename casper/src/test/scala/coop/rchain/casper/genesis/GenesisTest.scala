@@ -6,6 +6,7 @@ import java.nio.file.Files
 import cats.Id
 import com.google.protobuf.ByteString
 import coop.rchain.blockstorage.BlockStore
+import coop.rchain.catscontrib.TaskContrib._
 import coop.rchain.casper.BlockDag
 import coop.rchain.casper.helper.BlockStoreFixture
 import coop.rchain.casper.protocol.{BlockMessage, Bond}
@@ -127,17 +128,15 @@ class GenesisTest extends FlatSpec with Matchers with BlockStoreFixture {
           log: LogStub[Id],
           time: LogicalTime[Id]
       ) =>
-        val emptyStateHash  = runtimeManager.emptyStateHash
         implicit val logEff = log
         val genesis         = fromInputFiles()(runtimeManager, genesisPath, log, time)
         BlockStore[Id].put(genesis.blockHash, genesis)
         val blockDag = BlockDag.empty
 
-        val (maybePostGenesisStateHash, _) = InterpreterUtil
+        val maybePostGenesisStateHash = InterpreterUtil
           .validateBlockCheckpoint[Id](
             genesis,
             blockDag,
-            Set[ByteString](emptyStateHash),
             runtimeManager
           )
 
@@ -222,7 +221,7 @@ object GenesisTest {
 
     body(runtime, genesisPath, log, time)
 
-    runtime.close()
+    runtime.close().unsafeRunSync
     storePath.recursivelyDelete()
     gp.recursivelyDelete()
   }

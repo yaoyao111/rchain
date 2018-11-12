@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.collection.{immutable, mutable}
 import scala.collection.immutable.{HashMap, HashSet}
 import cats.effect.concurrent.Ref
-import coop.rchain.blockstorage.BlockStore
+import coop.rchain.blockstorage.{BlockMetadata, BlockStore}
 import coop.rchain.casper.EquivocationRecord.SequenceNumber
 import coop.rchain.casper.Estimator.Validator
 import coop.rchain.casper.util.rholang.RuntimeManager.StateHash
@@ -75,14 +75,12 @@ sealed abstract class MultiParentCasperInstances {
         topoSort = Vector(Vector(genesis.blockHash))
       )
     for {
-      validateBlockCheckpointResult <- InterpreterUtil
-                                        .validateBlockCheckpoint[F](
-                                          genesis,
-                                          dag,
-                                          Set[StateHash](runtimeManager.emptyStateHash),
-                                          runtimeManager
-                                        )
-      (maybePostGenesisStateHash, _) = validateBlockCheckpointResult
+      maybePostGenesisStateHash <- InterpreterUtil
+                                    .validateBlockCheckpoint[F](
+                                      genesis,
+                                      dag,
+                                      runtimeManager
+                                    )
       postGenesisStateHash <- maybePostGenesisStateHash match {
                                case Left(BlockException(ex)) => Sync[F].raiseError[StateHash](ex)
                                case Right(None) =>

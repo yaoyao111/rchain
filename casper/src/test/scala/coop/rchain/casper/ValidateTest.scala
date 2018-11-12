@@ -10,6 +10,7 @@ import cats.mtl.implicits._
 import com.google.protobuf.ByteString
 import coop.rchain.blockstorage.BlockStore
 import coop.rchain.blockstorage.BlockStore.BlockHash
+import coop.rchain.catscontrib.TaskContrib._
 import coop.rchain.casper.Estimator.{BlockHash, Validator}
 import coop.rchain.casper.genesis.Genesis
 import coop.rchain.casper.genesis.contracts.{ProofOfStake, ProofOfStakeValidator, Rev}
@@ -314,7 +315,7 @@ class ValidateTest
           parents.map(_.blockHash),
           creator = validators(validator),
           bonds = bonds,
-          deploys = Seq(ProtoUtil.basicProcessedDeploy(0)),
+          deploys = Seq(ProtoUtil.basicProcessedDeploy[Id](0)),
           justifications = latestMessages(justifications)
         )
 
@@ -470,7 +471,7 @@ class ValidateTest
           parents.map(_.blockHash),
           creator = validators(validator),
           bonds = bonds,
-          deploys = Seq(ProtoUtil.basicProcessedDeploy(0)),
+          deploys = Seq(ProtoUtil.basicProcessedDeploy[Id](0)),
           justifications = latestMessages(justifications)
         )
 
@@ -518,7 +519,7 @@ class ValidateTest
       val activeRuntime     = Runtime.create(storageDirectory, storageSize)
       val runtimeManager    = RuntimeManager.fromRuntime(activeRuntime)
       val _ = InterpreterUtil
-        .validateBlockCheckpoint[Id](genesis, BlockDag.empty, Set.empty[ByteString], runtimeManager)
+        .validateBlockCheckpoint[Id](genesis, BlockDag.empty, runtimeManager)
 
       Validate.bondsCache[Id](genesis, runtimeManager) should be(Right(Valid))
 
@@ -528,7 +529,7 @@ class ValidateTest
       val modifiedGenesis   = genesis.withBody(modifiedBody)
       Validate.bondsCache[Id](modifiedGenesis, runtimeManager) should be(Left(InvalidBondsCache))
 
-      activeRuntime.close()
+      activeRuntime.close().unsafeRunSync
   }
 
   "Field format validation" should "succeed on a valid block and fail on empty fields" in {
@@ -577,5 +578,13 @@ class ValidateTest
     Validate.deployCount[Id](
       genesis.withHeader(genesis.header.get.withDeployCount(100))
     ) should be(Left(InvalidDeployCount))
+  }
+
+  "Block version validation" should "work" in {
+    val (sk, pk) = Ed25519.newKeyPair
+    val block    = HashSetCasperTest.createGenesis(Map(pk -> 1))
+    val genesis  = ProtoUtil.signBlock(block, BlockDag.empty, pk, sk, "ed25519", "rchain")
+    Validate.version[Id](genesis, -1) should be(false)
+    Validate.version[Id](genesis, 1) should be(true)
   }
 }
