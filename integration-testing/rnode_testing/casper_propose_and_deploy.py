@@ -13,7 +13,7 @@ def mk_expected_string(node, i, random_token):
 def deploy_block(i, node, expected_string, contract_name):
     logging.info(f"Expected string: {expected_string}")
 
-    copyfile(resources.file_path(contract_name, __name__), f"{node.local_deploy_dir}/{contract_name}")
+    copyfile(resources.file_path(contract_name), f"{node.local_deploy_dir}/{contract_name}")
 
     exit_code, output = node.exec_run(f"sed -i -e 's/@placeholder@/{expected_string}/g' {node.remote_deploy_dir}/{contract_name}")
     logging.debug(f"Sed result: {exit_code}, output: {output}")
@@ -27,7 +27,7 @@ def deploy_block(i, node, expected_string, contract_name):
     logging.debug(f"Propose result: {exit_code}, output: {output}")
 
 
-def check_blocks(i, node, expected_string):
+def check_blocks(i, node, expected_string, network, config):
     logging.info(f"Check all peer logs for blocks containing {expected_string}")
 
     other_nodes = [n
@@ -60,4 +60,5 @@ def run(config, network):
                 deploy_block(i, node, expected_string, contract_name)
 
             for i in range(0, config.blocks):
-                check_blocks(i, node, mk_expected_string(node, i, random_token))
+                expected_string = mk_expected_string(node, i, random_token)
+                check_blocks(i, node, expected_string, network, config)
