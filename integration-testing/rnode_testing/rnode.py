@@ -1,12 +1,12 @@
-import os
-import logging
 import re
+import os
+import shlex
+import logging
 from contextlib import contextmanager
 from rnode_testing.docker import docker_network
 import rnode_testing.resources as resources
 from rnode_testing.util import log_box, make_tempfile, make_tempdir
 from rnode_testing.wait import wait_for, node_started
-import shlex
 
 from multiprocessing import Queue, Process
 from queue import Empty
@@ -38,10 +38,26 @@ class TimeoutError(Exception):
         self.timeout = timeout
 
 
+class UnexpectedProposeOutputFormatError(Exception):
+    def __init__(self, output):
+        self.output = output
+
+
 def make_container_logs_path(container_name):
     ci_logs_dir = os.environ.get('CI_LOGS_DIR')
     dir = 'logs' if ci_logs_dir is None else ci_logs_dir
     return os.path.join(dir, "{}.log".format(container_name))
+
+
+def extract_block_hash_from_propose_output(propose_output):
+    """We're getting back something along the lines of:
+
+    Response: Success! Block a91208047c... created and added.\n
+    """
+    match = re.match(r'Response: Success! Block ([0-9a-f]+)\.\.\. created and added.', propose_output.strip())
+    if match is None:
+        raise UnexpectedProposeOutputFormatError(propose_output)
+    return match.group(1)
 
 
 class Node:
@@ -53,6 +69,9 @@ class Node:
         self.docker_client = docker_client
         self.timeout = timeout
         self.network = network
+
+    def __repr__(self):
+        return '<Node(name={})>'.format(repr(self.name))
 
     def logs(self):
         return self.container.logs().decode('utf-8')
@@ -89,6 +108,9 @@ class Node:
 
     def show_blocks(self):
         return self.exec_run(f'{rnode_binary} show-blocks')
+
+    def get_block(self, block_hash):
+        return self.call_rnode('show-block', block_hash, stderr=False)
 
     def get_blocks_count(self):
         output = self.call_rnode('show-blocks', stderr=False).strip()
@@ -144,7 +166,9 @@ class Node:
         ))
 
     def propose(self):
-        return self.call_rnode('propose')
+        output = self.call_rnode('propose', stderr=False)
+        block_hash = extract_block_hash_from_propose_output(output)
+        return block_hash
 
     def repl(self, rholang_code, stderr=False):
         quoted_rholang_code = shlex.quote(rholang_code)
